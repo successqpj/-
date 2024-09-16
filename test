@@ -1,0 +1,607 @@
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Data;
+using System.Drawing;
+using System.Linq;
+using System.Net.Sockets;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Windows.Forms;
+using System.Net;
+using VM.Core;
+using VM.PlatformSDKCS;
+
+namespace VMTest1
+{
+    public partial class Form1 : Form
+    {
+        private TcpListener tcpListener;
+        private List<TcpClient> connectedClients;
+        private TcpClient tcpClient;
+        private bool isServerRunning = false;
+        private bool isClientRunning = false;
+        public Form1()
+        {
+            //（1.5）小技巧，VM4.3是单进程模式（二次开发进程包含服务和代理），不需要杀进程操作
+            //KillProcess("VisionMasterServerApp.exe");
+            //KillProcess("VmModuleProxy.exe");
+
+            InitializeComponent();
+
+            //（2.3）注册回调函数，推荐回调函数里获取结果
+            VmSolution.OnWorkStatusEvent += VmSolution_OnWorkStatusEvent;//所有流程运状态行回调
+        }
+
+        private void VmSolution_OnWorkStatusEvent(ImvsSdkDefine.IMVS_MODULE_WORK_STAUS workStatusInfo)
+        {
+            try
+            {
+                if (workStatusInfo.nWorkStatus == 0 && workStatusInfo.nProcessID == 10000)//为0表示执行完毕，为1表示正在执行；10000表示流程1
+                {
+                    //通过流程获取结果
+                    VmProcedure vmProcess1 = (VmProcedure)VmSolution.Instance["流程1"];
+                    var moduResult = vmProcess1.ModuResult;
+                    string ocrResult = moduResult.GetOutputString("out").astStringVal[0].strValue;
+                    string ocrNum = moduResult.GetOutputInt("out0").pIntVal[0].ToString();
+                    this.BeginInvoke(new Action(() =>
+                    {
+                        vmRenderControl1.ModuleSource = vmProcess1;//渲染
+
+                        listBox1.Items.Add("字符识别结果" + ocrResult);
+                        listBox1.TopIndex = listBox1.Items.Count - 1;
+                        listBox1.Items.Add("个数" + ocrNum);
+                        listBox1.TopIndex = listBox1.Items.Count - 1;
+                    }));
+                    //通过模块获取结果
+                    IMVSOcrModuCs.IMVSOcrModuTool ocrTool = (IMVSOcrModuCs.IMVSOcrModuTool)VmSolution.Instance["流程1.字符识别1"];
+                    string ocrScore1 = ocrTool.ModuResult.CharNum.ToString();
+
+                }
+            }
+            catch (VmException ex)
+            {
+                MessageBox.Show(Convert.ToString(ex.errorCode, 16));
+            }
+        }
+
+        /// <summary>
+        /// 启动时，以防VM双开，因此要杀死VM相关进程
+        /// </summary>
+        /// <param name="strKillName"></param>
+        void KillProcess(string strKillName)
+        {
+            foreach (System.Diagnostics.Process p in System.Diagnostics.Process.GetProcesses())
+            {
+                if (p.ProcessName.Contains(strKillName))
+                {
+                    try
+                    {
+                        p.Kill();
+                        p.WaitForExit();
+                    }
+                    catch (Exception e)
+                    {
+                        Console.WriteLine(e.Message.ToString());
+                    }
+                }
+            }
+        }
+        /// <summary>
+        /// 选择路径
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
+        private void button1_Click(object sender, EventArgs e)
+        {
+            OpenFileDialog openFileDialog = new OpenFileDialog();
+            openFileDialog.Filter = "VM Sol File|*.sol*";
+            DialogResult openFileRes = openFileDialog.ShowDialog();
+            if (DialogResult.OK == openFileRes)
+            {
+                textBox1.Text = openFileDialog.FileName;
+            }
+            listBox1.Items.Add("选择路径成功");
+            listBox1.TopIndex = listBox1.Items.Count - 1;
+        }
+        /// <summary>
+        /// 方案加载
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
+        private void button2_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                VmSolution.Load(textBox1.Text);
+                listBox1.Items.Add("方案加载成功");
+                listBox1.TopIndex = listBox1.Items.Count - 1;
+            }
+            catch (VmException ex)
+            {
+                MessageBox.Show(Convert.ToString(ex.errorCode, 16));
+            }
+        }
+        /// <summary>
+        /// 方案执行一次
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
+        private void button3_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                //（1.4）参数配置
+                IMVSOcrModuCs.IMVSOcrModuTool ocrTool = (IMVSOcrModuCs.IMVSOcrModuTool)VmSolution.Instance["流程1.字符识别1"];
+                vmParamsConfigWithRenderControl1.ModuleSource = ocrTool;
+
+                //（1.2）方案操作
+                VmSolution.Instance.SyncRun();
+                listBox1.Items.Add("方案执行一次成功");
+                listBox1.TopIndex = listBox1.Items.Count - 1;
+
+                //（1.3）结果获取,渲染结果,数据结果     
+                VmProcedure vmProcess1 = (VmProcedure)VmSolution.Instance["流程1"];
+                vmRenderControl1.ModuleSource = vmProcess1;
+                string ocrResult = vmProcess1.ModuResult.GetOutputString("out").astStringVal[0].strValue;
+                string ocrNum = vmProcess1.ModuResult.GetOutputInt("out0").pIntVal[0].ToString();
+                listBox1.Items.Add("字符识别结果" + ocrResult);
+                listBox1.TopIndex = listBox1.Items.Count - 1;
+                listBox1.Items.Add("个数" + ocrNum);
+                listBox1.TopIndex = listBox1.Items.Count - 1;
+            }
+            catch (VmException ex)
+            {
+                MessageBox.Show(Convert.ToString(ex.errorCode, 16));
+            }
+
+        }
+        /// <summary>
+        /// 方案保存
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
+        private void button4_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                VmSolution.Save();
+                //VmSolution.SaveAs("");
+                listBox1.Items.Add("方案保存成功");
+                listBox1.TopIndex = listBox1.Items.Count - 1;
+            }
+            catch (VmException ex)
+            {
+                MessageBox.Show(Convert.ToString(ex.errorCode, 16));
+            }
+        }
+        ///// <summary>
+        ///// 获取方案版本号
+        ///// </summary>
+        ///// <param name="sender"></param>
+        ///// <param name="e"></param>
+        //private void button5_Click(object sender, EventArgs e)
+        //{
+        //    try
+        //    {
+        //        string strVersion = VmSolution.Instance.GetSolutionVersion(textBox1.Text, "");
+        //        listBox1.Items.Add(strVersion);
+        //        listBox1.TopIndex = listBox1.Items.Count - 1;
+        //    }
+        //    catch (VmException ex)
+        //    {
+        //        MessageBox.Show(Convert.ToString(ex.errorCode, 16));
+        //    }
+        //}
+        ///// <summary>
+        ///// 设置运行间隔
+        ///// </summary>
+        ///// <param name="sender"></param>
+        ///// <param name="e"></param>
+        //private void button6_Click(object sender, EventArgs e)
+        //{
+        //    try
+        //    {
+        //        VmSolution.Instance.SetRunInterval(300); // 设置运行时间间隔
+        //        listBox1.Items.Add("设置运行间隔成功");
+        //        listBox1.TopIndex = listBox1.Items.Count - 1;
+        //    }
+        //    catch (VmException ex)
+        //    {
+        //        MessageBox.Show(Convert.ToString(ex.errorCode, 16));
+        //    }
+        //}
+        /// <summary>
+        /// 方案关闭
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
+        private void button7_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                VmSolution.Instance.CloseSolution();
+                listBox1.Items.Add("方案关闭成功");
+                listBox1.TopIndex = listBox1.Items.Count - 1;
+            }
+            catch (VmException ex)
+            {
+                MessageBox.Show(Convert.ToString(ex.errorCode, 16));
+            }
+        }
+        /// <summary>
+        /// 关闭时，释放资源
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
+        private void Form1_FormClosing(object sender, FormClosingEventArgs e)
+        {
+            try
+            {
+                VmSolution.Instance.Dispose();
+            }
+            catch (VmException ex)
+            {
+                MessageBox.Show(Convert.ToString(ex.errorCode, 16));
+            }
+        }
+        ///// <summary>
+        ///// 下拉获取所有流程
+        ///// </summary>
+        ///// <param name="sender"></param>
+        ///// <param name="e"></param>
+        //private void comboBox1_DropDown(object sender, EventArgs e)
+        //{
+        //    try
+        //    {
+        //        //(2.1)获取所有流程
+        //        ProcessInfoList vmProcessInfoList = VmSolution.Instance.GetAllProcedureList();//获取所有流程列
+        //        comboBox1.Items.Clear();
+        //        for (int item = 0; item < vmProcessInfoList.nNum; item++)
+        //        {
+        //            comboBox1.Items.Add(vmProcessInfoList.astProcessInfo[item].strProcessName);
+        //        }
+        //    }
+        //    catch (VmException ex)
+        //    {
+        //        MessageBox.Show(Convert.ToString(ex.errorCode, 16));
+        //    }
+        //}
+        ///// <summary>
+        ///// 流程区控件显示单个流程
+        ///// </summary>
+        ///// <param name="sender"></param>
+        ///// <param name="e"></param>
+        ////private void button8_Click(object sender, EventArgs e)
+        ////{
+        ////    try
+        ////    {
+        ////        vmProcedureConfigControl1.BindSingleProcedure(comboBox1.Text);
+        ////    }
+        ////    catch (VmException ex)
+        ////    {
+        ////        MessageBox.Show(Convert.ToString(ex.errorCode, 16));
+        ////    }
+        ////}
+        /////// <summary>
+        /////// 流程区控件显示多个流程
+        /////// </summary>
+        /////// <param name="sender"></param>
+        /////// <param name="e"></param>
+        ////private void button9_Click(object sender, EventArgs e)
+        ////{
+        ////    try
+        ////    {
+        ////        vmProcedureConfigControl1.BindMultiProcedure();
+        ////    }
+        ////    catch (VmException ex)
+        ////    {
+        ////        MessageBox.Show(Convert.ToString(ex.errorCode, 16));
+        ////    }
+        ////}
+        ///// <summary>
+        ///// 选择路径
+        ///// </summary>
+        ///// <param name="sender"></param>
+        ///// <param name="e"></param>
+        //private void button10_Click(object sender, EventArgs e)
+        //{
+        //    try
+        //    {
+        //        //（2.2）流程的操作
+        //        OpenFileDialog openFileDialog = new OpenFileDialog();
+        //        openFileDialog.Filter = "VM Sol File|*.prc*";
+        //        DialogResult openFileRes = openFileDialog.ShowDialog();
+        //        if (DialogResult.OK == openFileRes)
+        //        {
+        //            textBox2.Text = openFileDialog.FileName;
+        //        }
+        //        listBox1.Items.Add("选择路径成功");
+        //        listBox1.TopIndex = listBox1.Items.Count - 1;
+        //    }
+        //    catch (VmException ex)
+        //    {
+        //        MessageBox.Show(Convert.ToString(ex.errorCode, 16));
+        //    }
+        //}
+        ///// <summary>
+        ///// 导入流程
+        ///// </summary>
+        ///// <param name="sender"></param>
+        ///// <param name="e"></param>
+        //private void button11_Click(object sender, EventArgs e)
+        //{
+        //    try
+        //    {
+        //        VmProcedure.Load(textBox2.Text, "");
+        //        listBox1.Items.Add("导入流程成功");
+        //        listBox1.TopIndex = listBox1.Items.Count - 1;
+        //    }
+        //    catch (VmException ex)
+        //    {
+        //        MessageBox.Show(Convert.ToString(ex.errorCode, 16));
+        //    }
+        //}
+        ///// <summary>
+        ///// 导出流程
+        ///// </summary>
+        ///// <param name="sender"></param>
+        ///// <param name="e"></param>
+        //private void button12_Click(object sender, EventArgs e)
+        //{
+        //    try
+        //    {
+        //        VmProcedure vmProcess = (VmProcedure)VmSolution.Instance["流程1"];
+        //        vmProcess.SaveAs("E:\\测试保存流程.prc");
+        //        listBox1.Items.Add("导出流程成功");
+        //        listBox1.TopIndex = listBox1.Items.Count - 1;
+        //    }
+        //    catch (VmException ex)
+        //    {
+        //        MessageBox.Show(Convert.ToString(ex.errorCode, 16));
+        //    }
+        //}
+        /// <summary>
+        /// 运行流程
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
+        private void button13_Click(object sender, EventArgs e)
+        {
+            try
+            {         
+                VmProcedure vmProcess = (VmProcedure)VmSolution.Instance["流程1"];
+                vmProcess.Run();
+                //vmProcess.ContinuousRunEnable = true;//流程连续运行
+                listBox1.Items.Add("运行一次流程成功");
+                listBox1.TopIndex = listBox1.Items.Count - 1;
+            }
+            catch (VmException ex)
+            {
+                MessageBox.Show(Convert.ToString(ex.errorCode, 16));
+            }            
+        }
+        /// <summary>
+        /// 下拉获取某个流程的所有模块
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
+        private void comboBox2_DropDown(object sender, EventArgs e)
+        {
+            try
+            {   
+                VmProcedure vmProcess = (VmProcedure)VmSolution.Instance["流程1"];
+                comboBox2.Items.Clear();
+                ModuleInfoList ModuList = vmProcess.GetAllModuleList();
+                foreach (ModuInfo moduleName in ModuList.astModuleInfo)
+                {
+                    if (moduleName.strDisplayName != null)
+                    {
+                        comboBox2.Items.Add(moduleName.strDisplayName);
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+            }
+            catch (VmException ex)
+            {
+                MessageBox.Show(Convert.ToString(ex.errorCode, 16));
+            }            
+        }
+        /// <summary>
+        /// （2.4）参数配置
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
+        private void button14_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                //带渲染的参数配置
+                VmModule module = (VmModule)VmSolution.Instance["流程1." + comboBox2.Text];
+                vmParamsConfigWithRenderControl1.ModuleSource = module;
+
+                ////参数配置
+                //vmParamsConfigControl1.ModuleSource = module;
+            }
+            catch (VmException ex)
+            {
+                MessageBox.Show(Convert.ToString(ex.errorCode, 16));
+            }           
+        }
+
+
+        ///// <summary>
+        ///// 删除流程
+        ///// </summary>
+        ///// <param name="sender"></param>
+        ///// <param name="e"></param>
+        //private void button15_Click(object sender, EventArgs e)
+        //{
+        //    try
+        //    {
+        //        VmSolution.Instance.DeleteOneProcedure(comboBox1.Text);
+        //        listBox1.Items.Add("删除流程成功");
+        //        listBox1.TopIndex = listBox1.Items.Count - 1;
+        //    }
+        //    catch (VmException ex)
+        //    {
+        //        MessageBox.Show(Convert.ToString(ex.errorCode, 16));
+        //    }
+        //}
+
+        ///////////////////////////TCP连接/////////////////////////////////
+        private void button5_Click(object sender, EventArgs e)
+        {
+            int port = int.Parse(txtPort.Text);
+            if (isClientRunning)
+            {
+                StopClient();
+            }
+            else
+            {
+                StartClient(txtServerIP.Text, port);
+            }
+        }
+
+        private void StartClient(string serverIP, int port)
+        {
+            try
+            {
+                if (tcpClient == null)
+                {
+                    tcpClient = new TcpClient();  // 创建新的TcpClient实例
+                }
+                tcpClient.BeginConnect(serverIP, port, new AsyncCallback(ConnectCallback), null);
+                isClientRunning = true;
+                UpdateStartButton("关闭", Color.Red);
+            }
+            catch (Exception ex)
+            {
+                listBox1.Items.Add("客户端启动失败: " + ex.Message);
+                listBox1.TopIndex = listBox1.Items.Count - 1;
+                listBox1.TopIndex = listBox1.Items.Count - 1;
+            }
+        }
+        private void UpdateStartButton(string text, Color color)
+        {
+            if (button5.InvokeRequired)
+            {
+                button5.Invoke(new Action(() =>
+                {
+                    button5.Text = text;
+                    button5.BackColor = color;
+                }));
+            }
+            else
+            {
+                button5.Text = text;
+                button5.BackColor = color;
+            }
+        }
+
+        private void StopClient()
+        {
+            if (isClientRunning)
+            {
+                try
+                {
+                    if (tcpClient != null)
+                    {
+                        tcpClient.Close();
+                        tcpClient = null;  // 设置为null以便下次创建新的TcpClient实例
+                    }
+                    isClientRunning = false;
+                    UpdateStartButton("启动", SystemColors.Control);
+                    listBox1.Items.Add("客户端已停止。");
+                    listBox1.TopIndex = listBox1.Items.Count - 1;
+                }
+                catch (Exception ex)
+                {
+                    listBox1.Items.Add("停止客户端时出错: " + ex.Message);
+                    listBox1.TopIndex = listBox1.Items.Count - 1;
+                }
+            }
+        }
+        private void ConnectCallback(IAsyncResult ar)
+        {
+            try
+            {
+                tcpClient.EndConnect(ar);
+                listBox1.Items.Add("已连接到服务器");
+                listBox1.TopIndex = listBox1.Items.Count - 1;
+                BeginReceive(tcpClient);
+            }
+            catch (Exception ex)
+            {
+                listBox1.Items.Add("连接服务器时出错: " + ex.Message);
+                listBox1.TopIndex = listBox1.Items.Count - 1;
+            }
+        }
+        private void BeginReceive(TcpClient client)
+        {
+            try
+            {
+                NetworkStream stream = client.GetStream();
+                byte[] buffer = new byte[1024];
+                stream.BeginRead(buffer, 0, buffer.Length, new AsyncCallback(ReceiveCallback), new object[] { client, buffer });
+            }
+            catch (Exception ex)
+            {
+                listBox1.Items.Add("接收消息时出错: " + ex.Message);
+                listBox1.TopIndex = listBox1.Items.Count - 1;
+            }
+        }
+        private void ReceiveCallback(IAsyncResult ar)
+        {
+            object[] state = (object[])ar.AsyncState;
+            TcpClient client = (TcpClient)state[0];
+            byte[] buffer = (byte[])state[1];
+
+            try
+            {
+                NetworkStream stream = client.GetStream();
+                int bytesRead = stream.EndRead(ar);
+
+                if (bytesRead > 0)
+                {
+                    string message = Encoding.ASCII.GetString(buffer, 0, bytesRead);
+
+                    // 获取当前时间和消息来源
+                    string timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                    string clientEndpoint = client.Client.RemoteEndPoint.ToString();
+
+                    // 记录消息来源、接收时间和消息内容
+                    listBox1.Items.Add($"[{timestamp}] 来自 {clientEndpoint} 的消息: {message}");
+                    listBox1.TopIndex = listBox1.Items.Count - 1;
+
+                    // 继续接收来自此客户端的消息
+                    stream.BeginRead(buffer, 0, buffer.Length, new AsyncCallback(ReceiveCallback), state);
+                }
+                else
+                {
+                    // 客户端断开连接时，记录日志并更新客户端列表
+                    string clientEndpoint = client.Client.RemoteEndPoint.ToString();
+                    listBox1.Items.Add($"客户端 {clientEndpoint} 已断开连接。");
+                    listBox1.TopIndex = listBox1.Items.Count - 1;
+
+                    connectedClients.Remove(client);
+                    client.Close();
+                }
+            }
+            catch (Exception ex)
+            {
+                // 记录异常并处理客户端断开连接
+                listBox1.Items.Add("接收消息时出错: " + ex.Message);
+                listBox1.TopIndex = listBox1.Items.Count - 1;
+                connectedClients.Remove(client);
+                client.Close();
+            }
+        }
+
+
+    }
+}
